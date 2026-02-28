@@ -5,6 +5,10 @@
   "description": "Multi-LLM orchestration: fan-out, pipeline, and consensus patterns with AAHP-inspired handoffs. Dispatch tasks across 40+ models from chat.",
   "entry": "index.ts",
   "type": "extension",
+  "configSchema": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
   "config": {
     "enabled": true,
     "defaultPlanner": "copilot-opus",
@@ -40,4 +44,5 @@
       }
     }
   }
+}
 }

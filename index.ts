@@ -17,7 +17,6 @@ interface ModelInfo {
   provider: string;
   auth: boolean;
   tags: string[];
-  ctx?: string;
 }
 
 interface TaskProfile {
@@ -38,54 +37,99 @@ interface OrchestrateRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Model Discovery
+// Model Discovery (parses `openclaw models status`)
 // ---------------------------------------------------------------------------
 
-function discoverModels(): ModelInfo[] {
+let _cachedModels: ModelInfo[] | null = null;
+let _cachedAliases: Map<string, string> | null = null;
+let _cacheTime = 0;
+const CACHE_TTL_MS = 60_000;
+
+function parseModelsStatus(): { models: ModelInfo[]; aliases: Map<string, string> } {
+  const now = Date.now();
+  if (_cachedModels && _cachedAliases && now - _cacheTime < CACHE_TTL_MS) {
+    return { models: _cachedModels, aliases: _cachedAliases };
+  }
+
   try {
-    const raw = execSync("openclaw models list 2>/dev/null", {
+    const raw = execSync("openclaw models status 2>/dev/null", {
       encoding: "utf-8",
-      timeout: 10_000,
+      timeout: 15_000,
     });
+
+    const aliases = new Map<string, string>();
     const models: ModelInfo[] = [];
-    for (const line of raw.split("\n")) {
-      // Parse the table output: Model | Input | Ctx | Local | Auth | Tags
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("Model") || trimmed.startsWith("-")) continue;
 
-      const parts = trimmed.split(/\s{2,}/);
-      if (parts.length < 5) continue;
-
-      const id = parts[0].trim();
-      if (!id || id.startsWith("|")) continue;
-
-      const auth = parts[4]?.trim() === "yes";
-      const tagsRaw = parts[5]?.trim() || "";
-      const tags = tagsRaw.split(",").map((t: string) => t.trim()).filter(Boolean);
-
-      const aliasTag = tags.find((t: string) => t.startsWith("alias:"));
-      const alias = aliasTag ? aliasTag.replace("alias:", "") : undefined;
-
-      const provider = id.split("/")[0] || "unknown";
-      const ctx = parts[2]?.trim() || undefined;
-
-      models.push({ id, alias, provider, auth, tags, ctx });
+    // Parse "Aliases (N) : alias1 -> model1, alias2 -> model2, ..."
+    const aliasMatch = raw.match(/Aliases\s*\(\d+\)\s*:\s*(.+?)(?:\nConfigured)/s);
+    if (aliasMatch) {
+      const aliasStr = aliasMatch[1].replace(/\n/g, " ").trim();
+      for (const pair of aliasStr.split(",")) {
+        const m = pair.trim().match(/^(\S+)\s*->\s*(\S+)$/);
+        if (m) aliases.set(m[1], m[2]);
+      }
     }
-    return models;
+
+    // Parse "Configured models (N): model1, model2, ..."
+    const modelsMatch = raw.match(/Configured models\s*\(\d+\)\s*:\s*(.+?)(?:\n\n|\nAuth)/s);
+    if (modelsMatch) {
+      const modelStr = modelsMatch[1].replace(/\n/g, " ").trim();
+
+      // Parse "Providers w/ OAuth/tokens (N): provider1 (N), provider2 (N), ..."
+      const authLine = raw.match(/Providers w\/\s*OAuth\/tokens\s*\(\d+\)\s*:\s*(.+)/);
+      const authedStr = authLine ? authLine[1].toLowerCase() : "";
+
+      for (const chunk of modelStr.split(",")) {
+        const id = chunk.trim();
+        if (!id) continue;
+
+        const provider = id.split("/")[0] || "unknown";
+
+        // Find alias pointing to this model
+        let alias: string | undefined;
+        for (const [a, mid] of aliases) {
+          if (mid === id) { alias = a; break; }
+        }
+
+        // Check if provider has auth configured
+        const auth = authedStr.includes(provider);
+        const isFree = provider === "github-copilot";
+
+        models.push({
+          id,
+          alias,
+          provider,
+          auth,
+          tags: isFree ? ["free"] : [],
+        });
+      }
+    }
+
+    _cachedModels = models;
+    _cachedAliases = aliases;
+    _cacheTime = now;
+    return { models, aliases };
   } catch {
-    return [];
+    return { models: [], aliases: new Map() };
   }
 }
 
 function getAvailableModels(): ModelInfo[] {
-  return discoverModels().filter((m) => m.auth);
+  return parseModelsStatus().models;
 }
 
 function resolveModel(nameOrAlias: string, models: ModelInfo[]): ModelInfo | undefined {
-  return (
-    models.find((m) => m.alias === nameOrAlias) ||
-    models.find((m) => m.id === nameOrAlias)
-  );
+  const { aliases } = parseModelsStatus();
+  // Check if it's an alias
+  const fullId = aliases.get(nameOrAlias);
+  if (fullId) {
+    const found = models.find((m) => m.id === fullId);
+    if (found) return found;
+    // Alias exists but model might not be in filtered list -- still valid
+    return { id: fullId, alias: nameOrAlias, provider: fullId.split("/")[0], auth: true, tags: [] };
+  }
+  // Direct model ID match
+  return models.find((m) => m.id === nameOrAlias);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +164,7 @@ const TASK_KEYWORDS: Record<string, string[]> = {
 
 function classifyTask(task: string): string {
   const lower = task.toLowerCase();
-  let bestProfile = "coding"; // default
+  let bestProfile = "coding";
   let bestScore = 0;
 
   for (const [profile, keywords] of Object.entries(TASK_KEYWORDS)) {
@@ -146,7 +190,6 @@ interface AahpHandoff {
     task: string;
     subtask?: string;
     constraints: string[];
-    files?: string[];
   };
   routing: {
     sourceModel: string;
@@ -188,7 +231,8 @@ function createHandoff(
 // ---------------------------------------------------------------------------
 
 function formatModelList(models: ModelInfo[]): string {
-  const lines: string[] = ["*Available Models:*\n"];
+  const { aliases } = parseModelsStatus();
+  const lines: string[] = [`*Available Models (${models.length}):*\n`];
 
   const byProvider = new Map<string, ModelInfo[]>();
   for (const m of models) {
@@ -198,14 +242,20 @@ function formatModelList(models: ModelInfo[]): string {
   }
 
   for (const [provider, pModels] of byProvider) {
-    lines.push(`*${provider}* (${pModels.length})`);
+    const free = provider === "github-copilot" ? " (FREE)" : "";
+    lines.push(`*${provider}*${free} (${pModels.length})`);
     for (const m of pModels) {
       const alias = m.alias ? ` [${m.alias}]` : "";
-      const ctx = m.ctx && m.ctx !== "-" ? ` (${m.ctx} ctx)` : "";
-      const free = m.provider.includes("copilot") ? " FREE" : "";
-      lines.push(`  ${m.id}${alias}${ctx}${free}`);
+      const authIcon = m.auth ? "✅" : "❌";
+      lines.push(`  ${authIcon} ${m.id}${alias}`);
     }
     lines.push("");
+  }
+
+  lines.push(`*Aliases (${aliases.size}):*`);
+  for (const [a, fullId] of aliases) {
+    const free = fullId.startsWith("github-copilot") ? " FREE" : "";
+    lines.push(`  ${a} -> ${fullId}${free}`);
   }
 
   return lines.join("\n");
@@ -223,9 +273,9 @@ function formatRecommendation(
 
   const resolve = (name: string) => {
     const m = resolveModel(name, models);
-    const status = m ? "available" : "not found";
+    const status = m ? "✅" : "❌";
     const free = name.includes("copilot") || (m?.provider || "").includes("copilot") ? " (FREE)" : "";
-    return `\`${name}\` - ${status}${free}`;
+    return `${status} \`${name}\`${free}`;
   };
 
   lines.push(`*Recommended Setup:*`);
@@ -281,7 +331,7 @@ function showHelp(models: ModelInfo[], profiles: Record<string, TaskProfile>): s
     lines.push(`  *${name}*: planner=${p.planner} workers=${p.workers.join(",")} reviewer=${p.reviewer}`);
   }
 
-  lines.push(`\n*Models:* ${models.length} available (use \`/orchestrate models\` for full list)`);
+  lines.push(`\n*Models:* ${models.length} configured (use \`/orchestrate models\` for full list)`);
   lines.push(`*AAHP v3:* Structured handoffs between models -- 98% token reduction vs raw chat history`);
 
   return lines.join("\n");
@@ -300,7 +350,6 @@ async function executeFanOut(
   lines.push(`Task: ${req.task}`);
   lines.push(`Planner: \`${req.planner}\` | Workers: \`${req.workers.join(", ")}\` | Reviewer: \`${req.reviewer}\`\n`);
 
-  // Step 1: Planning
   lines.push("*Phase 1: Planning...*");
   const planHandoff = createHandoff(req.task, undefined, "user", req.planner, "fan-out");
 
@@ -325,7 +374,6 @@ Rules:
       maxTokens: 2000,
     });
     const content = planResult?.content || planResult?.message?.content || "";
-    // Extract JSON from response
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     subtasks = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
     if (!subtasks.length) {
@@ -340,7 +388,6 @@ Rules:
     return lines.join("\n") + `\n\nPlanner error: ${e.message}`;
   }
 
-  // Step 2: Parallel execution
   lines.push("*Phase 2: Parallel Execution...*");
   const results: Array<{ worker: string; subtask: string; result: string }> = [];
 
@@ -380,7 +427,6 @@ Execute this subtask now. Provide only the deliverable output, no explanation or
   await Promise.all(workerPromises);
   lines.push("");
 
-  // Step 3: Review & Merge
   lines.push("*Phase 3: Review & Merge...*");
   const reviewPrompt = `You are a senior reviewer. Multiple AI workers executed subtasks in parallel. Review and merge their outputs into a coherent final result.
 
@@ -494,7 +540,6 @@ async function executeConsensus(
   lines.push(`Models: ${allWorkers.map((m) => `\`${m}\``).join(", ")}`);
   lines.push(`Synthesizer: \`${req.reviewer}\`\n`);
 
-  // Send same task to all models in parallel
   lines.push("*Phase 1: Parallel Query...*");
   const responses: Array<{ model: string; response: string }> = [];
 
@@ -521,7 +566,6 @@ Provide a thorough, well-structured response. Be specific and actionable.`;
   await Promise.all(promises);
   lines.push("");
 
-  // Synthesize
   lines.push("*Phase 2: Synthesis...*");
   const synthPrompt = `You received responses from ${responses.length} different AI models to the same question. Synthesize the best answer by:
 1. Identifying points of agreement (high confidence)
@@ -570,7 +614,6 @@ function parseArgs(argsStr: string): Record<string, string> {
   while ((match = regex.exec(argsStr)) !== null) {
     result[match[1]] = match[2] ?? match[3] ?? match[4];
   }
-  // Also capture bare first word as subcommand
   const bare = argsStr.trim().split(/\s+/)[0];
   if (bare && !bare.startsWith("--")) {
     result._subcommand = bare;
@@ -599,40 +642,44 @@ export default function register(api: any) {
   api.registerCommand({
     name: "orchestrate",
     description: "Multi-LLM orchestration with AAHP v3 handoffs",
-    requireAuth: true,
+    usage: "/orchestrate [help|models|recommend] [--mode fan-out|pipeline|consensus] [--task \"...\"]",
+    requireAuth: false,
     acceptsArgs: true,
-    handler: async (_ctx: any, argsStr: string) => {
+    handler: async (ctx: any) => {
+      const argsStr = String(ctx?.args ?? "").trim();
       const models = getAvailableModels();
       const args = parseArgs(argsStr || "");
       const subcommand = args._subcommand || "";
 
+      const reply = (text: string) => ({ text });
+
       // /orchestrate help
-      if (!argsStr?.trim() || subcommand === "help") {
-        return showHelp(models, taskProfiles);
+      if (!argsStr || subcommand === "help") {
+        return reply(showHelp(models, taskProfiles));
       }
 
       // /orchestrate models
       if (subcommand === "models") {
-        return formatModelList(models);
+        return reply(formatModelList(models));
       }
 
       // /orchestrate recommend "task"
       if (subcommand === "recommend") {
         const task = argsStr.replace(/^recommend\s*/, "").replace(/^["']|["']$/g, "").trim();
-        if (!task) return "Usage: `/orchestrate recommend \"your task description\"`";
+        if (!task) return reply("Usage: `/orchestrate recommend \"your task description\"`");
         const profile = classifyTask(task);
         const tp = taskProfiles[profile] || {
           planner: cfg.defaultPlanner || "copilot-opus",
           workers: cfg.defaultWorkers || ["copilot52c", "grokfast"],
           reviewer: cfg.defaultReviewer || "copilot-sonnet46",
         };
-        return formatRecommendation(task, profile, tp, models);
+        return reply(formatRecommendation(task, profile, tp, models));
       }
 
-      // /orchestrate --mode ... --task ... --planner ... --workers ... --reviewer ...
+      // /orchestrate --mode ... --task ...
       const task = args.task;
       if (!task) {
-        return "Missing `--task`. Usage: `/orchestrate --task \"your task\" [--mode fan-out] [--planner opus] [--workers copilot52c,grokfast] [--reviewer copilot-sonnet46]`";
+        return reply("Missing `--task`. Usage: `/orchestrate --task \"your task\" [--mode fan-out] [--planner opus] [--workers copilot52c,grokfast] [--reviewer copilot-sonnet46]`");
       }
 
       const profile = args.profile || classifyTask(task);
@@ -642,47 +689,41 @@ export default function register(api: any) {
         reviewer: cfg.defaultReviewer || "copilot-sonnet46",
       };
 
-      // Resolve planner
       let planner = args.planner || tp.planner;
-      if (planner === "help") {
-        return formatRecommendation(task, profile, tp, models);
-      }
+      if (planner === "help") return reply(formatRecommendation(task, profile, tp, models));
 
-      // Resolve workers
       let workers: string[];
-      if (args.workers === "help") {
-        return formatRecommendation(task, profile, tp, models);
-      }
+      if (args.workers === "help") return reply(formatRecommendation(task, profile, tp, models));
       workers = args.workers ? args.workers.split(",").map((w: string) => w.trim()) : tp.workers;
 
-      // Resolve reviewer
       let reviewer = args.reviewer || tp.reviewer;
-      if (reviewer === "help") {
-        return formatRecommendation(task, profile, tp, models);
-      }
+      if (reviewer === "help") return reply(formatRecommendation(task, profile, tp, models));
 
       const mode: OrchestrateMode = (args.mode as OrchestrateMode) || "fan-out";
-
       const req: OrchestrateRequest = { mode, task, planner, workers, reviewer, profile };
 
-      // Validate models exist
+      // Validate models
       const allModels = [planner, ...workers, reviewer];
       const missing = allModels.filter((m) => !resolveModel(m, models));
       if (missing.length > 0) {
-        return `Unknown models: ${missing.map((m) => `\`${m}\``).join(", ")}. Use \`/orchestrate models\` to see available models.`;
+        return reply(`Unknown models: ${missing.map((m) => `\`${m}\``).join(", ")}. Use \`/orchestrate models\` to see available models.`);
       }
 
-      // Execute
+      let result: string;
       switch (mode) {
         case "fan-out":
-          return executeFanOut(req, api);
+          result = await executeFanOut(req, api);
+          break;
         case "pipeline":
-          return executePipeline(req, api);
+          result = await executePipeline(req, api);
+          break;
         case "consensus":
-          return executeConsensus(req, api);
+          result = await executeConsensus(req, api);
+          break;
         default:
-          return `Unknown mode: \`${mode}\`. Supported: fan-out, pipeline, consensus`;
+          result = `Unknown mode: \`${mode}\`. Supported: fan-out, pipeline, consensus`;
       }
+      return reply(result);
     },
   });
 }
