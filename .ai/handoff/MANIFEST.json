@@ -40,7 +40,7 @@
     }
   },
   "quick_context": "Initial scaffold. Plugin registers /orchestrate command with 3 modes (fan-out, pipeline, consensus), model discovery via openclaw CLI, task classification, AAHP v3 handoff objects, and 5 predefined task profiles. Needs integration testing and api.inference validation.",
-  "next_task_id": 6,
+  "next_task_id": 10,
   "tasks": {
     "T-001": {
       "title": "Integration test: validate api.inference works with model aliases",
@@ -60,22 +60,69 @@
       "title": "Add timeout + error recovery for worker agents",
       "status": "ready",
       "priority": "medium",
-      "depends_on": ["T-001"],
+      "depends_on": [
+        "T-001"
+      ],
       "created": "2026-02-28T16:10:00Z"
     },
     "T-004": {
       "title": "Add progress reporting via message tool during execution",
       "status": "ready",
       "priority": "medium",
-      "depends_on": ["T-001"],
+      "depends_on": [
+        "T-001"
+      ],
       "created": "2026-02-28T16:10:00Z"
     },
     "T-005": {
       "title": "Publish to npm + ClawHub",
       "status": "blocked",
       "priority": "low",
-      "depends_on": ["T-001", "T-002"],
+      "depends_on": [
+        "T-001",
+        "T-002"
+      ],
       "created": "2026-02-28T16:10:00Z"
+    },
+    "T-006": {
+      "title": "T-005: Publish to npm and ClawHub",
+      "status": "ready",
+      "priority": "medium",
+      "depends_on": [],
+      "created": "2026-03-08T08:04:26.057Z",
+      "notes": "- `npm publish --access public` (@elvatis_com scope)\n- `clawhub publish`\n- Update MODELS.md with orchestrator references\n\nBlocked by T-001 (needs testing first).\n\n**From AAHP NEXT_ACTIONS**",
+      "github_issue": 4,
+      "github_repo": "elvatis/openclaw-model-orchestrator"
+    },
+    "T-007": {
+      "title": "T-004: Add progress reporting during execution",
+      "status": "ready",
+      "priority": "medium",
+      "depends_on": [],
+      "created": "2026-03-08T08:04:26.057Z",
+      "notes": "Send intermediate messages during long orchestrations:\n- 'Planning phase complete, starting 3 workers...'\n- 'Worker 2/3 complete...'\n- Use message tool to update chat in real-time\n\n**From AAHP NEXT_ACTIONS**",
+      "github_issue": 3,
+      "github_repo": "elvatis/openclaw-model-orchestrator"
+    },
+    "T-008": {
+      "title": "T-003: Add timeout and error recovery for workers",
+      "status": "ready",
+      "priority": "high",
+      "depends_on": [],
+      "created": "2026-03-08T08:04:26.057Z",
+      "notes": "- Configurable timeout per worker (default 60s)\n- Graceful degradation: if 1 worker fails, continue with others\n- Retry logic for transient errors (429, 503)\n- Report partial results if not all workers complete\n\n**From AAHP NEXT_ACTIONS**",
+      "github_issue": 2,
+      "github_repo": "elvatis/openclaw-model-orchestrator"
+    },
+    "T-009": {
+      "title": "T-001: Integration test - validate api.inference with model aliases",
+      "status": "ready",
+      "priority": "medium",
+      "depends_on": [],
+      "created": "2026-03-08T08:04:26.057Z",
+      "notes": "Test the plugin end-to-end:\n- `/orchestrate help` output\n- `/orchestrate models` fetches real model list\n- `/orchestrate recommend` returns classification\n- Simple fan-out with 2 workers\n- Validate api.inference response shape\n\n**From AAHP NEXT_ACTIONS**",
+      "github_issue": 1,
+      "github_repo": "elvatis/openclaw-model-orchestrator"
     }
   }
 }
