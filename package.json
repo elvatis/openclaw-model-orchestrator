@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Multi-LLM orchestration for OpenClaw: fan-out, pipeline, and consensus patterns with AAHP-inspired handoffs",
   "author": "Elvatis <emre.kohler@elvatis.com>",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/elvatis/openclaw-model-orchestrator.git"
