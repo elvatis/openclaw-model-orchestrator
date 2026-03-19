@@ -1,6 +1,6 @@
 {
   "name": "@elvatis_com/openclaw-model-orchestrator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-LLM orchestration for OpenClaw: fan-out, pipeline, and consensus patterns with AAHP-inspired handoffs",
   "author": "Elvatis <emre.kohler@elvatis.com>",
   "license": "Apache-2.0",
@@ -14,6 +14,13 @@
     "multi-model",
     "aahp",
     "llm"
+  ],
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
   ],
   "type": "module",
   "main": "dist/index.js",
